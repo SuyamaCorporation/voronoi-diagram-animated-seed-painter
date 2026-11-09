@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ボロノイ図アニメーション種点ペインター</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-white min-h-screen flex flex-col items-center p-4">
+<h1 class="text-2xl font-bold mb-1 text-center">🔷 ボロノイ図インタラクティブ</h1>
+<p class="text-gray-400 text-sm mb-3 text-center">クリックで種点追加 · ドラッグで移動</p>
+<canvas id="c" class="rounded-xl shadow-2xl mb-3" style="max-width:100%;cursor:crosshair"></canvas>
+<div class="flex flex-wrap gap-3 justify-center mb-3">
+  <label class="text-xs text-gray-300 flex items-center gap-2">
+    <input type="checkbox" id="showDelaunay" class="rounded"> ドロネー三角形表示
+  </label>
+  <label class="text-xs text-gray-300 flex items-center gap-2">
+    <input type="checkbox" id="showCentroids" class="rounded"> 重心表示
+  </label>
+  <label class="text-xs text-gray-300 flex flex-col items-center">
+    カラーテーマ
+    <select id="theme" class="mt-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm">
+      <option value="pastel">パステル</option>
+      <option value="vivid">ビビッド</option>
+      <option value="mono">モノクロ</option>
+      <option value="heat">ヒート</option>
+    </select>
+  </label>
+</div>
+<div class="flex gap-3 mb-3">
+  <button id="randomBtn" class="bg-blue-700 hover:bg-blue-600 px-4 py-2 rounded font-bold transition text-sm">🎲 ランダム配置</button>
+  <button id="lloydBtn" class="bg-purple-700 hover:bg-purple-600 px-4 py-2 rounded font-bold transition text-sm">⟳ Lloyd緩和</button>
+  <button id="clearBtn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded font-bold transition text-sm">🗑 クリア</button>
+</div>
+<div id="info" class="text-xs text-gray-500 font-mono"></div>
+<script>
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+let W,H;
+let seeds=[];
+let dragging=-1;
+let img;
+
+function resize(){
+  W=cv.width=Math.min(window.innerWidth-32,560);
+  H=cv.height=Math.round(W*0.75);
+  render();
+}
+resize();
+
+function getColor(i, theme, n){
+  const t=i/Math.max(n-1,1);
+  switch(theme){
+    case 'vivid': { const h=i/n*360; return `hsl(${h},70%,55%)`; }
+    case 'mono': { const v=30+t*60; return `hsl(0,0%,${v}%)`; }
+    case 'heat': { const h=(1-t)*240; return `hsl(${h},80%,50%)`; }
+    default: { const h=i/n*360; return `hsl(${h},50%,75%)`; }
+  }
+}
+
+function computeVoronoi(){
+  if(seeds.length===0) return;
+  const theme=document.getElementById('theme').value;
+  const imgData=ctx.createImageData(W,H);
+  const data=imgData.data;
+  const n=seeds.length;
+
+  for(let py=0;py<H;py++){
+    for(let px=0;px<W;px++){
+      let minD=Infinity,minI=0;
+      for(let i=0;i<n;i++){
+        const dx=px-seeds[i].x, dy=py-seeds[i].y;
+        const d=dx*dx+dy*dy;
+        if(d<minD){ minD=d; minI=i; }
+      }
+      // Edge detection: find 2nd closest
+      let min2=Infinity;
+      for(let i=0;i<n;i++){
+        if(i===minI) continue;
+        const dx=px-seeds[i].x,dy=py-seeds[i].y;
+        const d=dx*dx+dy*dy;
+        if(d<min2) min2=d;
+      }
+      const edge=Math.sqrt(min2)-Math.sqrt(minD)<2.5;
+
+      // Parse color
+      const col=getColor(minI,theme,n);
+      const m=col.match(/hsl\((\d+),(\d+)%,(\d+)%\)/);
+      const h=parseInt(m[1])/360, s=parseInt(m[2])/100, l=parseInt(m[3])/100;
+      const a=l<0.5?l*(1+s):l+s-l*s, b_=2*l-a;
+      function hue2rgb(p,q,t){ t=(t+1)%1; if(t<1/6)return p+(q-p)*6*t; if(t<1/2)return q; if(t<2/3)return p+(q-p)*(2/3-t)*6; return p; }
+      let r=hue2rgb(b_,a,h+1/3)*255|0, g2=hue2rgb(b_,a,h)*255|0, bl=hue2rgb(b_,a,h-1/3)*255|0;
+      if(edge){ r=20;g2=20;bl=20; }
+      const idx=(py*W+px)*4;
+      data[idx]=r;data[idx+1]=g2;data[idx+2]=bl;data[idx+3]=255;
+    }
+  }
+  ctx.putImageData(imgData,0,0);
+}
+
+function drawOverlays(){
+  const showD=document.getElementById('showDelaunay').checked;
+  const showC=document.getElementById('showCentroids').checked;
+
+  // Draw seeds
+  for(let i=0;i<seeds.length;i++){
+    ctx.beginPath();
+    ctx.arc(seeds[i].x,seeds[i].y,5,0,Math.PI*2);
+    ctx.fillStyle='rgba(255,255,255,0.9)';
+    ctx.fill();
+    ctx.strokeStyle='rgba(0,0,0,0.5)';
+    ctx.lineWidth=1.5;
+    ctx.stroke();
+  }
+
+  if(showD && seeds.length>=3){
+    // Simple triangulation (Bowyer-Watson simplified - just draw edges between close seeds)
+    ctx.strokeStyle='rgba(255,255,255,0.3)';
+    ctx.lineWidth=0.8;
+    for(let i=0;i<seeds.length;i++){
+      for(let j=i+1;j<seeds.length;j++){
+        const d=Math.hypot(seeds[i].x-seeds[j].x,seeds[i].y-seeds[j].y);
+        if(d<W*0.35){
+          ctx.beginPath();
+          ctx.moveTo(seeds[i].x,seeds[i].y);
+          ctx.lineTo(seeds[j].x,seeds[j].y);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+}
+
+function render(){
+  ctx.fillStyle='#15151f';
+  ctx.fillRect(0,0,W,H);
+  computeVoronoi();
+  drawOverlays();
+  document.getElementById('info').textContent=`種点: ${seeds.length}個`;
+}
+
+function computeCentroid(i){
+  let cx=0,cy=0,cnt=0;
+  for(let py=0;py<H;py+=2){
+    for(let px=0;px<W;px+=2){
+      let minD=Infinity,minI=0;
+      for(let k=0;k<seeds.length;k++){
+        const dx=px-seeds[k].x,dy=py-seeds[k].y;
+        const d=dx*dx+dy*dy;
+        if(d<minD){minD=d;minI=k;}
+      }
+      if(minI===i){cx+=px;cy+=py;cnt++;}
+    }
+  }
+  return cnt>0?{x:cx/cnt,y:cy/cnt}:seeds[i];
+}
+
+cv.addEventListener('mousedown',e=>{
+  const r=cv.getBoundingClientRect();
+  const x=(e.clientX-r.left)*W/r.width;
+  const y=(e.clientY-r.top)*H/r.height;
+  for(let i=0;i<seeds.length;i++){
+    if(Math.hypot(seeds[i].x-x,seeds[i].y-y)<12){dragging=i;return;}
+  }
+  seeds.push({x,y});
+  render();
+});
+cv.addEventListener('mousemove',e=>{
+  if(dragging<0) return;
+  const r=cv.getBoundingClientRect();
+  seeds[dragging].x=(e.clientX-r.left)*W/r.width;
+  seeds[dragging].y=(e.clientY-r.top)*H/r.height;
+  render();
+});
+cv.addEventListener('mouseup',()=>{dragging=-1;});
+
+document.getElementById('randomBtn').addEventListener('click',()=>{
+  seeds=[];
+  for(let i=0;i<15;i++) seeds.push({x:Math.random()*W,y:Math.random()*H});
+  render();
+});
+document.getElementById('lloydBtn').addEventListener('click',()=>{
+  for(let i=0;i<seeds.length;i++) seeds[i]=computeCentroid(i);
+  render();
+});
+document.getElementById('clearBtn').addEventListener('click',()=>{seeds=[];render();});
+document.getElementById('theme').addEventListener('change',render);
+document.getElementById('showDelaunay').addEventListener('change',render);
+document.getElementById('showCentroids').addEventListener('change',render);
+
+// Initial seeds
+seeds=[{x:W*0.3,y:H*0.3},{x:W*0.7,y:H*0.3},{x:W*0.5,y:H*0.65},{x:W*0.15,y:H*0.65},{x:W*0.85,y:H*0.65}];
+render();
+</script>
+</body>
+</html>
